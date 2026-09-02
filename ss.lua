@@ -34,16 +34,16 @@ local SETTINGS = {
     AttackReach = 55,
     AttackCooldown = 0.9,
     DodgeBuffer = 2.5,
-    WaypointTriggerDist = 40,
-    MaxNodeDistance = 12,
+    WaypointTriggerDist = 120,
+    MaxNodeDistance = 65,
     WallRayLength = 5.5,
-    NoEnemyDelay = 7.0,
+    NoEnemyDelay = 5.0,
     Webhook = "",
-    IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part, Ring, Meshes, Flame Shuriken, Wind Blast, Aquatic Smite"
+    IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part"
 }
 
 -- STATE VARIABLES
-local isAutoplay = true
+local isAutoplay = false
 local isRecording = false
 local isCasting = false
 local waypoints = {}
@@ -1008,19 +1008,19 @@ end
 local function isPointInDanger(point, hazards)
     local minHazardDist = math.huge
     for _, hazard in ipairs(hazards) do
-        -- 1. Check current position 
+        -- 1. Check current position
         local localP = hazard.cframe:PointToObjectSpace(point)
         local dx = math.abs(localP.X) - (hazard.size.X / 2)
         local dy = math.abs(localP.Y) - (hazard.size.Y / 2)
         local dz = math.abs(localP.Z) - (hazard.size.Z / 2)
         local dEdge = math.max(dx, dy, dz)
-        
+
         if dEdge < minHazardDist then minHazardDist = dEdge end
-        
+
         if dEdge <= SETTINGS.DodgeBuffer then
             return true, hazard.name, hazard, minHazardDist
         end
-        
+
         -- 2. ADVANCED LOGIC: Projectile Path Prediction
         if hazard.velocity.Magnitude > 5 then
             for t = 0.2, 0.6, 0.2 do
@@ -1028,14 +1028,14 @@ local function isPointInDanger(point, hazards)
                 -- Preserve rotation while shifting position
                 local futureCFrame = hazard.cframe - hazard.cframe.Position + futurePos
                 local futureLocalP = futureCFrame:PointToObjectSpace(point)
-                
+
                 local fdx = math.abs(futureLocalP.X) - (hazard.size.X / 2)
                 local fdy = math.abs(futureLocalP.Y) - (hazard.size.Y / 2)
                 local fdz = math.abs(futureLocalP.Z) - (hazard.size.Z / 2)
                 local fdEdge = math.max(fdx, fdy, fdz)
-                
+
                 if fdEdge < minHazardDist then minHazardDist = fdEdge end
-                
+
                 if fdEdge <= (SETTINGS.DodgeBuffer * 2) then
                     return true, hazard.name .. " (Incoming)", hazard, minHazardDist
                 end
@@ -1108,7 +1108,23 @@ end
 local activePathWaypoints, pathIndex = {}, 1
 local lastPathComputeTime = 0
 local pathObject = PathfindingService:CreatePath({AgentRadius = 2.5, AgentHeight = 5.0, AgentCanJump = true, AgentCanClimb = false, WaypointSpacing = 12})
+local function isValidTeleport(startPos, endPos)
+    local direction = endPos - startPos
+    local distance = direction.Magnitude
 
+    local wallRayResult = Workspace:Raycast(startPos, direction, raycastParams)
+    if wallRayResult and wallRayResult.Instance and wallRayResult.Instance.CanCollide then
+        return false
+    end
+
+    local maxDrop = 15
+    local groundRayResult = Workspace:Raycast(endPos, Vector3.new(0, -maxDrop, 0), raycastParams)
+    if not groundRayResult or not groundRayResult.Instance or not groundRayResult.Instance.CanCollide then
+        return false
+    end
+
+    return true
+end
 task.spawn(function()
     local lastMoveToPos, lastMoveToTime = Vector3.zero, 0
     local stuckCheckPos, stuckCheckTime = Vector3.zero, tick()
@@ -1197,23 +1213,32 @@ task.spawn(function()
                                             statusLabel.Text = string.format("Micro-dodge Walk (%.1f st)", dist)
 
                                         -- Otherwise, perform the teleport dodge
-                                        elseif dist <= TP_DODGE_DIST + 1 then
-                                            rootPart.CFrame = CFrame.new(activeDodgePoint, Vector3.new(activeDodgePoint.X + toTarget.X, activeDodgePoint.Y, activeDodgePoint.Z + toTarget.Z))
-                                            lastTpDodgeTime = now
-                                            statusLabel.Text = string.format("TP DODGE -> safe point (%.1f st)", dist)
-                                        else
-                                            local stepDir   = Vector3.new(toTarget.X, 0, toTarget.Z).Unit
-                                            local stepPoint = playerPos + stepDir * TP_DODGE_DIST
-                                            local stepSafe  = not isPointInDanger(stepPoint, hazards)
-                                            if stepSafe then
-                                                rootPart.CFrame = CFrame.new(stepPoint, stepPoint + stepDir)
-                                                lastTpDodgeTime = now
-                                                statusLabel.Text = string.format("TP DODGE step -> safe zone (%.1f st remaining)", dist - TP_DODGE_DIST)
-                                            else
-                                                smoothMoveTo(activeDodgePoint)
-                                                statusLabel.Text = "Running to TP-able position..."
-                                            end
-                                        end
+                                       -- Otherwise, perform the teleport dodge
+                                                                               elseif dist <= TP_DODGE_DIST + 1 then
+                                                                                   if isValidTeleport(playerPos, activeDodgePoint) then
+                                                                                       rootPart.CFrame = CFrame.new(activeDodgePoint, Vector3.new(activeDodgePoint.X + toTarget.X, activeDodgePoint.Y, activeDodgePoint.Z + toTarget.Z))
+                                                                                       lastTpDodgeTime = now
+                                                                                       statusLabel.Text = string.format("TP DODGE -> safe point (%.1f st)", dist)
+                                                                                   else
+                                                                                       -- Fallback if teleport is invalid
+                                                                                       smoothMoveTo(activeDodgePoint)
+                                                                                       statusLabel.Text = "Walk dodge (Blocked by wall/air)"
+                                                                                   end
+                                                                               else
+                                                                                   local stepDir   = Vector3.new(toTarget.X, 0, toTarget.Z).Unit
+                                                                                   local stepPoint = playerPos + stepDir * TP_DODGE_DIST
+                                                                                   local stepSafe  = not isPointInDanger(stepPoint, hazards)
+
+                                                                                   -- Validate the stepPoint before teleporting
+                                                                                   if stepSafe and isValidTeleport(playerPos, stepPoint) then
+                                                                                       rootPart.CFrame = CFrame.new(stepPoint, stepPoint + stepDir)
+                                                                                       lastTpDodgeTime = now
+                                                                                       statusLabel.Text = string.format("TP DODGE step -> safe zone (%.1f st remaining)", dist - TP_DODGE_DIST)
+                                                                                   else
+                                                                                       smoothMoveTo(activeDodgePoint)
+                                                                                       statusLabel.Text = "Running to TP-able position..."
+                                                                                   end
+                                                                               end
                                     end
                                 else
                                     smoothMoveTo(activeDodgePoint)
@@ -1222,7 +1247,7 @@ task.spawn(function()
             continue
         end
 
-        if isCasting and not currentlyInDanger then humanoid:MoveTo(playerPos); continue end
+      --  if isCasting and not currentlyInDanger then humanoid:MoveTo(playerPos); continue end
 
         if (playerPos - stuckCheckPos).Magnitude < 0.75 then
             if tick() - stuckCheckTime > 0.4 then humanoid.Jump = true; stuckCheckTime = tick() end
@@ -1333,6 +1358,26 @@ task.spawn(function()
         end
     end
 end)
+
+local function isValidTeleport(startPos, endPos)
+    local direction = endPos - startPos
+    local distance = direction.Magnitude
+
+    -- 1. Wall Check: Ensure line of sight to the destination
+    local wallRayResult = Workspace:Raycast(startPos, direction, raycastParams)
+    if wallRayResult and wallRayResult.Instance and wallRayResult.Instance.CanCollide then
+        return false -- A solid object is blocking the teleport path
+    end
+
+    -- 2. Height Check: Ensure there is ground beneath the teleport destination
+    local maxDrop = 15 -- Maximum studs allowed above ground
+    local groundRayResult = Workspace:Raycast(endPos, Vector3.new(0, -maxDrop, 0), raycastParams)
+    if not groundRayResult or not groundRayResult.Instance or not groundRayResult.Instance.CanCollide then
+        return false -- Target position is too high in the air (no ground found)
+    end
+
+    return true
+end
 
 --------------------------------------------------------------------------------
 -- TIMED COMBO ROUTINE
