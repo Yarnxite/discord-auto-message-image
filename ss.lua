@@ -37,7 +37,7 @@ local SETTINGS = {
     WaypointTriggerDist = 120,
     MaxNodeDistance = 65,
     WallRayLength = 5.5,
-    NoEnemyDelay = 5.0,
+    NoEnemyDelay = 7.0,
     Webhook = "",
     IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part, Ring, Meshes"
 }
@@ -112,8 +112,8 @@ local function fireReplayDungeonRemote()
                 end)
 
                 replayDungeon:FireServer({
-                    dungeonProgress = "bossKilled", dungeonStarted = true, hardcore = true,
-                    dungeonFinished = true, dungeonName = currentDungeonName, isHardcore = true, fightingBoss = true
+                    dungeonProgress = "bossKilled", dungeonStarted = true, hardcore = false,
+                    dungeonFinished = true, dungeonName = currentDungeonName, isHardcore = false, fightingBoss = true
                 })
             end
         end
@@ -124,7 +124,6 @@ local function formatNumber(n)
     return tostring(n):reverse():gsub("(%d%d%d)", "%1,"):reverse():gsub("^,", "")
 end
 
--- Track run start time for elapsed time in webhook
 local runStartTime = tick()
 
 local function sendRewardWebhook(rewardData)
@@ -150,7 +149,7 @@ local function sendRewardWebhook(rewardData)
     local minutes = math.floor(elapsed / 60)
     local seconds = math.floor(elapsed % 60)
     local timeText = string.format("%dm %ds", minutes, seconds)
-    runStartTime = tick() -- reset for next run
+    runStartTime = tick()
 
     local itemsText = #itemsList > 0 and table.concat(itemsList, "\n") or "None"
     local embedPayload = {
@@ -776,9 +775,6 @@ end)
 local function applyFakeName(char)
     if not char then return end
 
-    -- Permanently spoof a label for the lifetime of this character.
-    -- A new call to applyFakeName on CharacterAdded handles each respawn,
-    -- so there is no time-out: the watcher stays alive until the part is removed.
     local function spoofLabel(nameLbl)
         if not nameLbl then return end
         nameLbl.Text = SPOOF_NAME
@@ -791,7 +787,6 @@ local function applyFakeName(char)
         end)
         table.insert(connections, spoofConn)
 
-        -- Stop watching when the label is destroyed (character died / removed)
         local destroyConn
         destroyConn = nameLbl.AncestryChanged:Connect(function()
             if not nameLbl.Parent then
@@ -852,18 +847,18 @@ local function setupCharacterConstraints(newChar)
 
     traversingManualNodes = false
     currentWaypointIndex = 1
+    activeDodgePoint = nil -- Reset dodge state on new character load
 
     table.clear(persistentIgnoreList)
     table.insert(persistentIgnoreList, character)
     for _, node in ipairs(visualNodes) do table.insert(persistentIgnoreList, node) end
     raycastParams.FilterDescendantsInstances = persistentIgnoreList
 
-    -- Reset node counter immediately when the player dies so the route
-    -- restarts from node 1 on the next respawn.
     local diedConn
     diedConn = humanoid.Died:Connect(function()
         traversingManualNodes = false
         currentWaypointIndex = 1
+        activeDodgePoint = nil -- Clear target immediately on death to prevent rubber-band loops
         statusLabel.Text = "Status: Died -- nodes reset"
         diedConn:Disconnect()
     end)
@@ -873,9 +868,8 @@ local function setupCharacterConstraints(newChar)
 end
 setupCharacterConstraints(character)
 table.insert(connections, player.CharacterAdded:Connect(setupCharacterConstraints))
-
 local function findBestTarget()
-    if tick() - lastEnemyScan > 1.0 then
+    if tick() - lastEnemyScan > 0.25 then
         table.clear(cachedEnemies)
         for _, obj in ipairs(Workspace:GetDescendants()) do
             if obj:IsA("Model") and obj ~= character and not Players:GetPlayerFromCharacter(obj) then
@@ -898,9 +892,8 @@ local function findBestTarget()
     end
     return closestMob
 end
-
 --------------------------------------------------------------------------------
--- EVENT-DRIVEN OBB HAZARD SCANNER
+-- INTELLIGENT MULTI-SIGNAL HAZARD SCORING SYSTEM
 --------------------------------------------------------------------------------
 local HAZARD_KEYWORDS = {
     "hitbox", "damage", "hurt", "hazard", "danger", "warning", "telegraph", "indicator", "marker",
@@ -910,36 +903,65 @@ local HAZARD_KEYWORDS = {
     "spell", "magic", "fire", "flame", "burn", "ice", "frost", "lightning", "shock", "spark", "poison", "toxic", "meteor", "bomb"
 }
 
-local function evaluateAndAddHazardPart(obj, isExplicitHazard)
-    if not obj.CanCollide and not isExplicitHazard then return end
-    if obj.Parent and obj.Parent:FindFirstChildOfClass("Humanoid") then return end
-    if character and obj:IsDescendantOf(character) then return end
-
+local function scoreHazardPart(obj)
+    if not obj:IsA("BasePart") then return 0 end
+    local score = 0
     local name = obj.Name:lower()
 
-    local isGeneric = (name == "model" or name == "part" or name == "meshpart" or name == "union" or name == "folder")
-    if not isExplicitHazard and not isGeneric then return end
-    if isGeneric and obj.CanCollide == true then return end
+    -- 1. Keyword Check
+    for _, kw in ipairs(HAZARD_KEYWORDS) do
+        if name:find(kw) then
+            score = score + 3
+            break
+        end
+    end
 
-    activeHazards[obj] = true
+    -- 2. Visual Material & Color Check (Neon / Bright Red-Orange indicators)
+    if obj.Material == Enum.Material.Neon then
+        score = score + 2
+        local col = obj.Color
+        if col.R > 0.5 and col.G < 0.3 then -- High red spectrum
+            score = score + 2
+        end
+    end
+
+    -- 3. Dynamic Effects Check (Emitters, Fire, Beams, Trails)
+    if obj:FindFirstChildOfClass("ParticleEmitter") or obj:FindFirstChildOfClass("Fire") or obj:FindFirstChildOfClass("Beam") or obj:FindFirstChildOfClass("Trail") then
+        score = score + 3
+    end
+
+    -- 4. Transparency indicators (often semi-transparent warning zones)
+    if obj.Transparency > 0 and obj.Transparency < 1 then
+        score = score + 1
+    end
+
+    return score
+end
+
+local function evaluateAndAddHazardPart(obj)
+    if not obj:IsA("BasePart") then return end
+    if obj.Parent and obj.Parent:FindFirstChildOfClass("Humanoid") then return end
+    if character and obj:IsDescendantOf(character) then return end
+    if obj.Name == "Terrain" or obj.Name == "Baseplate" then return end
+
+    local score = scoreHazardPart(obj)
+    -- If multi-signal score hits 3 or higher, register as an active hazard
+    if score >= 3 then
+        activeHazards[obj] = true
+    end
 end
 
 local function onDescendantAdded(child)
     if child.Name == "Terrain" or child.Name == "Baseplate" or child:IsA("Camera") then return end
-    if child:FindFirstChildOfClass("Humanoid") then return end
-
-    local isHazard = false
-    local n = child.Name:lower()
-    for _, kw in ipairs(HAZARD_KEYWORDS) do if n:find(kw) then isHazard = true; break end end
-
     if child:IsA("BasePart") then
-        evaluateAndAddHazardPart(child, isHazard)
-    elseif (child:IsA("Model") or child:IsA("Folder")) and isHazard then
+        evaluateAndAddHazardPart(child)
+    elseif child:IsA("Model") or child:IsA("Folder") then
         for _, desc in ipairs(child:GetDescendants()) do
-            if desc:IsA("BasePart") then evaluateAndAddHazardPart(desc, true) end
+            if desc:IsA("BasePart") then evaluateAndAddHazardPart(desc) end
         end
     end
 end
+
 table.insert(connections, Workspace.DescendantAdded:Connect(onDescendantAdded))
 table.insert(connections, Workspace.DescendantRemoving:Connect(function(child)
     if activeHazards[child] then activeHazards[child] = nil end
@@ -951,7 +973,6 @@ table.insert(connections, Workspace.DescendantRemoving:Connect(function(child)
 end))
 for _, child in ipairs(Workspace:GetChildren()) do onDescendantAdded(child) end
 
--- [NEW BUG FIX]: LIVE HAZARD FILTERING
 local function getDangerousHazards()
     local hazards = {}
     for part, _ in pairs(activeHazards) do
@@ -960,7 +981,6 @@ local function getDangerousHazards()
                 local name = part.Name:lower()
                 local isIgnored = false
 
-                -- Live filter check happens here now!
                 for _, kw in ipairs(parsedIgnoreKeywords) do
                     if name:find(kw) then isIgnored = true; break end
                 end
@@ -968,7 +988,13 @@ local function getDangerousHazards()
                 if not isIgnored then
                     local size = part.Size
                     if math.max(size.X, size.Y, size.Z) <= 300 then
-                        table.insert(hazards, {cframe = part.CFrame, size = size, name = part.Name})
+                        -- ADVANCED LOGIC: Capture AssemblyLinearVelocity to predict projectile paths
+                        table.insert(hazards, {
+                            cframe = part.CFrame,
+                            size = size,
+                            name = part.Name,
+                            velocity = part.AssemblyLinearVelocity or Vector3.zero
+                        })
                     end
                 end
             end
@@ -980,30 +1006,77 @@ local function getDangerousHazards()
 end
 
 local function isPointInDanger(point, hazards)
+    local minHazardDist = math.huge
     for _, hazard in ipairs(hazards) do
+        -- 1. Check current position 
         local localP = hazard.cframe:PointToObjectSpace(point)
-        if math.abs(localP.X) <= (hazard.size.X / 2) + SETTINGS.DodgeBuffer and
-           math.abs(localP.Z) <= (hazard.size.Z / 2) + SETTINGS.DodgeBuffer then
-            return true, hazard.name
+        local dx = math.abs(localP.X) - (hazard.size.X / 2)
+        local dy = math.abs(localP.Y) - (hazard.size.Y / 2)
+        local dz = math.abs(localP.Z) - (hazard.size.Z / 2)
+        local dEdge = math.max(dx, dy, dz)
+        
+        if dEdge < minHazardDist then minHazardDist = dEdge end
+        
+        if dEdge <= SETTINGS.DodgeBuffer then
+            return true, hazard.name, hazard, minHazardDist
+        end
+        
+        -- 2. ADVANCED LOGIC: Projectile Path Prediction
+        if hazard.velocity.Magnitude > 5 then
+            for t = 0.2, 0.6, 0.2 do
+                local futurePos = hazard.cframe.Position + (hazard.velocity * t)
+                -- Preserve rotation while shifting position
+                local futureCFrame = hazard.cframe - hazard.cframe.Position + futurePos
+                local futureLocalP = futureCFrame:PointToObjectSpace(point)
+                
+                local fdx = math.abs(futureLocalP.X) - (hazard.size.X / 2)
+                local fdy = math.abs(futureLocalP.Y) - (hazard.size.Y / 2)
+                local fdz = math.abs(futureLocalP.Z) - (hazard.size.Z / 2)
+                local fdEdge = math.max(fdx, fdy, fdz)
+                
+                if fdEdge < minHazardDist then minHazardDist = fdEdge end
+                
+                if fdEdge <= (SETTINGS.DodgeBuffer * 2) then
+                    return true, hazard.name .. " (Incoming)", hazard, minHazardDist
+                end
+            end
         end
     end
-    return false, nil
+    return false, nil, nil, minHazardDist
 end
-
 task.spawn(function()
-    local noEnemyTimer = nil
     while true do
-        task.wait(0.2)
+        task.wait(0.05)
         if isAutoplay and humanoid and humanoid.Health > 0 and rootPart then
-            if findBestTarget() == nil then
-                if not noEnemyTimer then noEnemyTimer = tick() end
+            local target = findBestTarget()
+            if target and target:FindFirstChild("HumanoidRootPart") then
+                local dist = (rootPart.Position - target.HumanoidRootPart.Position).Magnitude
 
-                if tick() - noEnemyTimer >= SETTINGS.NoEnemyDelay then
-                    fireReplayDungeonRemote()
-                    task.wait(3); noEnemyTimer = nil
+                if dist <= SETTINGS.AttackReach then
+                    -- NEW: Only attack if there is a clear line of sight
+                    local rayResult = Workspace:Raycast(rootPart.Position, (target.HumanoidRootPart.Position - rootPart.Position).Unit * dist, raycastParams)
+                    if not rayResult or not rayResult.Instance.CanCollide then
+
+                        isCasting = true
+                        if alignOrient then alignOrient.CFrame = CFrame.lookAt(rootPart.Position, Vector3.new(target.HumanoidRootPart.Position.X, rootPart.Position.Y, target.HumanoidRootPart.Position.Z)) end
+                        task.wait(0.15)
+                        VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.Q, false, game)
+                        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.Q, false, game)
+                        isCasting = false
+
+                        task.wait(SETTINGS.AttackCooldown)
+
+                        if target and target:FindFirstChild("HumanoidRootPart") and (rootPart.Position - target.HumanoidRootPart.Position).Magnitude <= SETTINGS.AttackReach then
+                            isCasting = true
+                            if alignOrient then alignOrient.CFrame = CFrame.lookAt(rootPart.Position, Vector3.new(target.HumanoidRootPart.Position.X, rootPart.Position.Y, target.HumanoidRootPart.Position.Z)) end
+                            task.wait(0.15)
+                            VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.E, false, game)
+                            VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.E, false, game)
+                            isCasting = false
+                            task.wait(SETTINGS.AttackCooldown)
+                        end
+                    end
                 end
-            else
-                noEnemyTimer = nil
             end
         end
     end
@@ -1039,8 +1112,10 @@ local pathObject = PathfindingService:CreatePath({AgentRadius = 2.5, AgentHeight
 task.spawn(function()
     local lastMoveToPos, lastMoveToTime = Vector3.zero, 0
     local stuckCheckPos, stuckCheckTime = Vector3.zero, tick()
+    local lastTpDodgeTime = 0
 
     local function smoothMoveTo(pos)
+        if not humanoid or humanoid.Health <= 0 or not rootPart then return end
         local glidedPos = getGlidedTargetPos(rootPart.Position, pos)
         if (glidedPos - lastMoveToPos).Magnitude > 1.0 or (tick() - lastMoveToTime) > 0.35 then
             lastMoveToPos, lastMoveToTime = glidedPos, tick()
@@ -1050,40 +1125,48 @@ task.spawn(function()
 
     while true do
         task.wait(0.04)
+        -- STRICT CHECK: Instantly skip loop if player is dead or script stopped
         if not isAutoplay or not humanoid or humanoid.Health <= 0 or not rootPart then continue end
 
         local playerPos = rootPart.Position
         local hazards = getDangerousHazards()
         local currentlyInDanger = (isPointInDanger(playerPos, hazards))
 
+        local TP_DODGE_DIST   = 8
+        local TP_DODGE_WAIT   = 0.77
+
         if currentlyInDanger or (activeDodgePoint and tick() < dodgeExpiration) then
+            -- Double check health before executing TP dodge logic
+            if not humanoid or humanoid.Health <= 0 or not rootPart then continue end
+
             local needNewPoint = true
             if activeDodgePoint and tick() < dodgeExpiration then
                 if not (isPointInDanger(activeDodgePoint, hazards)) then needNewPoint = false end
             end
 
             if needNewPoint then
-                local target = findBestTarget()
+                local target  = findBestTarget()
                 local enemyPos = target and (target:FindFirstChild("HumanoidRootPart") and target.HumanoidRootPart.Position) or playerPos
                 local bestPoint, bestScore = nil, math.huge
 
-                for _, dist in ipairs({2, 4, 7, 11, 16, 22, 30}) do
-                    for angle = 0, math.pi * 2 - 0.1, math.pi / 12 do
+                for _, dist in ipairs({2, 4, 6, 8, 11, 16, 22, 30}) do
+                    for angle = 0, math.pi * 2 - 0.01, math.pi / 12 do
                         local candidate = playerPos + Vector3.new(math.cos(angle), 0, math.sin(angle)) * dist
-                        local isCompletelySafe, minHazardDist = true, math.huge
+                        local safe, minHazardDist = true, math.huge
 
                         for _, hazard in ipairs(hazards) do
-                            local localP = hazard.cframe:PointToObjectSpace(candidate)
-                            local dx = math.abs(localP.X) - (hazard.size.X / 2)
-                            local dz = math.abs(localP.Z) - (hazard.size.Z / 2)
-                            local distToEdge = math.max(dx, dz)
-
-                            if distToEdge <= SETTINGS.DodgeBuffer then
-                                isCompletelySafe = false; break
-                            elseif distToEdge < minHazardDist then minHazardDist = distToEdge end
+                            local localP  = hazard.cframe:PointToObjectSpace(candidate)
+                            local dx      = math.abs(localP.X) - (hazard.size.X / 2)
+                            local dz      = math.abs(localP.Z) - (hazard.size.Z / 2)
+                            local dEdge   = math.max(dx, dz)
+                            if dEdge <= SETTINGS.DodgeBuffer then
+                                safe = false; break
+                            elseif dEdge < minHazardDist then
+                                minHazardDist = dEdge
+                            end
                         end
 
-                        if isCompletelySafe then
+                        if safe then
                             local score = (candidate - enemyPos).Magnitude + (math.max(0, 5 - minHazardDist) * 2)
                             if score < bestScore then bestScore = score; bestPoint = candidate end
                         end
@@ -1092,14 +1175,49 @@ task.spawn(function()
                 end
 
                 activeDodgePoint = bestPoint or playerPos
-                dodgeExpiration = tick() + (bestPoint and DODGE_COOLDOWN or 0.1)
+                dodgeExpiration  = tick() + 0.5
             end
 
             if activeDodgePoint then
-                if alignOrient and alignOrient.Parent and (activeDodgePoint - playerPos).Magnitude > 0.5 then
+                local toTarget = activeDodgePoint - playerPos
+                local dist     = toTarget.Magnitude
+
+                if alignOrient and alignOrient.Parent and dist > 0.5 then
                     alignOrient.CFrame = CFrame.lookAt(playerPos, Vector3.new(activeDodgePoint.X, playerPos.Y, activeDodgePoint.Z))
                 end
-                smoothMoveTo(activeDodgePoint)
+
+                local now = tick()
+                                if (now - lastTpDodgeTime) >= TP_DODGE_WAIT then
+                                    -- Final safeguard check before applying CFrame teleport
+                                    if humanoid and humanoid.Health > 0 and rootPart then
+
+                                        -- SIMPLE LOGIC: If the dodge distance is tiny, just walk to it
+                                        if dist <= 2.0 then
+                                            smoothMoveTo(activeDodgePoint)
+                                            statusLabel.Text = string.format("Micro-dodge Walk (%.1f st)", dist)
+
+                                        -- Otherwise, perform the teleport dodge
+                                        elseif dist <= TP_DODGE_DIST + 1 then
+                                            rootPart.CFrame = CFrame.new(activeDodgePoint, Vector3.new(activeDodgePoint.X + toTarget.X, activeDodgePoint.Y, activeDodgePoint.Z + toTarget.Z))
+                                            lastTpDodgeTime = now
+                                            statusLabel.Text = string.format("TP DODGE -> safe point (%.1f st)", dist)
+                                        else
+                                            local stepDir   = Vector3.new(toTarget.X, 0, toTarget.Z).Unit
+                                            local stepPoint = playerPos + stepDir * TP_DODGE_DIST
+                                            local stepSafe  = not isPointInDanger(stepPoint, hazards)
+                                            if stepSafe then
+                                                rootPart.CFrame = CFrame.new(stepPoint, stepPoint + stepDir)
+                                                lastTpDodgeTime = now
+                                                statusLabel.Text = string.format("TP DODGE step -> safe zone (%.1f st remaining)", dist - TP_DODGE_DIST)
+                                            else
+                                                smoothMoveTo(activeDodgePoint)
+                                                statusLabel.Text = "Running to TP-able position..."
+                                            end
+                                        end
+                                    end
+                                else
+                                    smoothMoveTo(activeDodgePoint)
+                                end
             end
             continue
         end
@@ -1130,23 +1248,13 @@ task.spawn(function()
             smoothMoveTo(targetPos)
         end
 
-        -- ==========================================
-        -- PRIORITY 1: MANUAL WAYPOINT TRAVERSAL
-        -- Supports skipping nodes: if current target is out of reach, scans
-        -- forward for the nearest reachable node instead of hard-stopping.
-        -- Stops at the last node instead of looping back to the beginning.
-        -- ==========================================
         if #waypoints > 0 then
             if currentWaypointIndex > #waypoints then
-                -- Last node reached -- hold here and let combat/idle logic take over
                 if traversingManualNodes then
                     statusLabel.Text = "Route complete: All nodes visited"
                     traversingManualNodes = false
                 end
-                -- Do NOT reset currentWaypointIndex so we don't loop
             else
-                -- Scan forward from currentWaypointIndex for the nearest node
-                -- that is within WaypointTriggerDist (allows skipping gaps).
                 local function findNextReachableNode()
                     for i = currentWaypointIndex, #waypoints do
                         if (playerPos - waypoints[i]).Magnitude <= SETTINGS.WaypointTriggerDist then
@@ -1158,7 +1266,6 @@ task.spawn(function()
 
                 local currentDist = (playerPos - waypoints[currentWaypointIndex]).Magnitude
 
-                -- (Re)snap to a reachable node when idle or current node is out of reach
                 if not traversingManualNodes or currentDist > SETTINGS.MaxNodeDistance then
                     local nearIdx = findNextReachableNode()
                     if nearIdx then
@@ -1168,7 +1275,6 @@ task.spawn(function()
                         currentWaypointIndex = nearIdx
                         traversingManualNodes = true
                     else
-                        -- No reachable node found ahead; pause and wait
                         if traversingManualNodes then
                             statusLabel.Text = "Waiting: No nodes in range..."
                         end
@@ -1188,7 +1294,6 @@ task.spawn(function()
                 end
             end
         end
-
 
         local activeTarget = findBestTarget()
         if activeTarget and activeTarget:FindFirstChild("HumanoidRootPart") then
@@ -1230,7 +1335,7 @@ task.spawn(function()
 end)
 
 --------------------------------------------------------------------------------
--- 10. TIMED COMBO ROUTINE (WITH LIVE ATTACK REACH & COOLDOWN)
+-- TIMED COMBO ROUTINE
 --------------------------------------------------------------------------------
 task.spawn(function()
     while true do
@@ -1266,7 +1371,7 @@ task.spawn(function()
 end)
 
 --------------------------------------------------------------------------------
--- 11. BUTTON EVENT BINDINGS
+-- BUTTON EVENT BINDINGS
 --------------------------------------------------------------------------------
 recordBtn.MouseButton1Click:Connect(function()
     isRecording = not isRecording
@@ -1280,7 +1385,7 @@ end)
 clearWaypointsBtn.MouseButton1Click:Connect(clearWaypoints)
 runMacroBtn.MouseButton1Click:Connect(function()
     isAutoplay = not isAutoplay
-    runMacroBtn.Text = isAutoplay and "STOP AUTOPLAY" or "RUN SCRIPT (Autoplay)"
+    runMacroBtn.Text = isAutoplahiy and "STOP AUTOPLAY" or "RUN SCRIPT (Autoplay)"
     runMacroBtn.BackgroundColor3 = isAutoplay and Color3.fromRGB(200, 40, 40) or Color3.fromRGB(30, 180, 100)
     if isAutoplay then
         if #waypoints == 0 and selectedMacroName ~= "" then loadMacroFromFile(selectedMacroName) end
