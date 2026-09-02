@@ -43,7 +43,7 @@ local SETTINGS = {
 }
 
 -- STATE VARIABLES
-local isAutoplay = false
+local isAutoplay = true
 local isRecording = false
 local isCasting = false
 local waypoints = {}
