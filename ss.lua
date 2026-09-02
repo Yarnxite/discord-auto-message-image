@@ -39,7 +39,7 @@ local SETTINGS = {
     WallRayLength = 5.5,
     NoEnemyDelay = 7.0,
     Webhook = "",
-    IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part, Ring, Meshes, Flame Shuriken"
+    IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part, Ring, Meshes, Flame Shuriken, Wind Blast, Aquatic Smite"
 }
 
 -- STATE VARIABLES
