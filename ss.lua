@@ -34,12 +34,12 @@ local SETTINGS = {
     AttackReach = 55,
     AttackCooldown = 0.9,
     DodgeBuffer = 2.5,
-    WaypointTriggerDist = 120,
-    MaxNodeDistance = 65,
+    WaypointTriggerDist = 40,
+    MaxNodeDistance = 12,
     WallRayLength = 5.5,
-    NoEnemyDelay = 5.0,
+    NoEnemyDelay = 7.0,
     Webhook = "",
-    IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part"
+    IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part, Ring, Meshes, Flame Shuriken, Wind Blast, Aquatic Smite"
 }
 
 -- STATE VARIABLES
