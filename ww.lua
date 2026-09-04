@@ -76,7 +76,7 @@ local SETTINGS = {
     Webhook = "",
     IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part",
     AutoSellEnabled = false,
-    HideUI = true,
+    HideUI = false,
     AutoSellRarities = { common = false, uncommon = false, rare = false, epic = false, legendary = false, ultimate = false },
     AutoSellCategories = { weapon = false, ability = false, chest = false, helmet = false },
     AutoLobbyEnabled = true,
