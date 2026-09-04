@@ -76,6 +76,7 @@ local SETTINGS = {
     Webhook = "",
     IgnoreKeywords = "ring1, ring2, ring3, ring4, ring5, ring6, part",
     AutoSellEnabled = false,
+    HideUI = false,
     AutoSellRarities = { common = false, uncommon = false, rare = false, epic = false, legendary = false, ultimate = false },
     AutoSellCategories = { weapon = false, ability = false, chest = false, helmet = false },
     AutoLobbyEnabled = true,
@@ -1047,6 +1048,7 @@ function saveConfig()
         WallRayLength = SETTINGS.WallRayLength,
         NoEnemyDelay = SETTINGS.NoEnemyDelay,
         AutoSellEnabled = SETTINGS.AutoSellEnabled,
+        HideUI = SETTINGS.HideUI,
         AutoSellRarities = SETTINGS.AutoSellRarities,
         AutoSellCategories = SETTINGS.AutoSellCategories,
         AutoLobbyEnabled = SETTINGS.AutoLobbyEnabled,
@@ -1227,6 +1229,7 @@ local function loadConfigAndAutoExecute()
         SETTINGS.LobbyPrivate = cfg.LobbyPrivate or false
         SETTINGS.TargetPartySize = cfg.TargetPartySize or 0
         SETTINGS.AutoSellEnabled = cfg.AutoSellEnabled or false
+        if cfg.HideUI ~= nil then SETTINGS.HideUI = cfg.HideUI end
 
         if cfg.AutoSellRarities and type(cfg.AutoSellRarities) == "table" then
             for rName, rVal in pairs(cfg.AutoSellRarities) do
@@ -1916,4 +1919,21 @@ runMacroBtn.MouseButton1Click:Connect(function()
 end)
 terminateBtn.MouseButton1Click:Connect(cleanup)
 
+-- RIGHT SHIFT UI TOGGLE
+UserInputService.InputBegan:Connect(function(input, gameProcessed)
+    if gameProcessed then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        if screenGui then
+            SETTINGS.HideUI = not screenGui.Enabled
+            screenGui.Enabled = not SETTINGS.HideUI
+            saveConfig()
+        end
+    end
+end)
+
 loadConfigAndAutoExecute()
+
+-- Apply saved HideUI state after configuration has loaded.
+if screenGui then
+    screenGui.Enabled = not SETTINGS.HideUI
+end
